@@ -2,6 +2,8 @@ package net.intelie.challenges;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.Comparator;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,9 +15,9 @@ import java.util.stream.Stream;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 
-public class InMemoryEventStore implements  EventStore {
+public class InMemoryEventStore implements EventStore {
 
-    public final ConcurrentMap<String, ConcurrentNavigableMap<Long, List<Event>>> state;
+    private ConcurrentMap<String, ConcurrentNavigableMap<Long, List<Event>>> state;
 
     public InMemoryEventStore() {
         state = new ConcurrentHashMap<>();
@@ -23,8 +25,8 @@ public class InMemoryEventStore implements  EventStore {
 
     @Override
     public void insert(Event event) {
-        state.putIfAbsent(event.type(), new ConcurrentSkipListMap<>());
-        state.get(event.type()).merge(event.timestamp(), singletonList(event), CONCAT);
+        state.computeIfAbsent(event.type(), k -> new ConcurrentSkipListMap<>(EMPTY))
+                .merge(event.timestamp(), singletonList(event), CONCAT);
     }
 
     @Override
@@ -34,17 +36,40 @@ public class InMemoryEventStore implements  EventStore {
 
     @Override
     public EventIterator query(String type, long startTime, long endTime) {
-        return null;
-    }
+        return new EventIterator() {
+            Iterator<Event> iterator = FLATTEN.apply(state.getOrDefault(type, new ConcurrentSkipListMap<>(EMPTY))
+                    .subMap(endTime, false, startTime, true)
+                    .values()
+                    .stream())
+                    .iterator();
 
-    public List<Event> queryAsList(String type, long startTime, long endTime) {
+            Event current;
 
-        Stream<List<Event>> eventsAsStream = state.get(type)
-                .subMap(startTime, endTime)
-                .values()
-                .stream();
+            @Override
+            public boolean moveNext() {
+                current = (iterator != null && iterator.hasNext()) ?
+                        iterator.next() : null;
 
-        return FLATTEN.apply(eventsAsStream);
+                return current != null;
+            }
+
+            @Override
+            public Event current() {
+                return current;
+            }
+
+            @Override
+            public void remove() {
+                state.computeIfPresent(current.type(), (type, events) ->
+                        events.remove(current.timestamp()) != null && events.isEmpty() ?
+                                null : events);
+            }
+
+            @Override
+            public void close() {
+                iterator = null;
+            }
+        };
     }
 
     private static final BinaryOperator<List<Event>> CONCAT = (events1, events2) -> {
@@ -56,4 +81,7 @@ public class InMemoryEventStore implements  EventStore {
 
     private static final Function<Stream<List<Event>>, List<Event>> FLATTEN = events ->
             events.reduce(emptyList(), CONCAT);
+
+    private static final ConcurrentNavigableMap<Long, List<Event>> EMPTY =
+            new ConcurrentSkipListMap<>(Comparator.reverseOrder());
 }
