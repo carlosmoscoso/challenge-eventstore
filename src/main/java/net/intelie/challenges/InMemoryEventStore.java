@@ -55,13 +55,18 @@ public class InMemoryEventStore implements EventStore {
 
             @Override
             public Event current() {
+
+                if (current == null) {
+                    throw new IllegalStateException();
+                }
+
                 return current;
             }
 
             @Override
             public void remove() {
-                state.computeIfPresent(current.type(), (type, events) ->
-                        events.remove(current.timestamp()) != null && events.isEmpty() ?
+                state.computeIfPresent(current().type(), (type, events) ->
+                        events.remove(current().timestamp()) != null && events.isEmpty() ?
                                 null : events);
             }
 
